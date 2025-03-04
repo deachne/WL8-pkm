@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "wl8-docs": {
+      "command": "node",
+      "args": ["/Users/darcynestibo/Desktop/WL8-pkm/mcp/wl8-docs/build/index.js"],
+      "env": {
+        "WL8_DOCS_PATH": "/Users/darcynestibo/Desktop/WL8-pkm/docs"
+      },
+      "disabled": false,
+      "autoApprove": ["search_docs", "readResource"]
+    }
+  }
+}
