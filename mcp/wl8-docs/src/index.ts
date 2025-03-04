@@ -27,14 +27,26 @@ class WL8DocsServer {
       },
       {
         capabilities: {
-          resources: {},
-          tools: {},
+          resources: {
+            listResources: true,
+            readResource: true
+          },
+          tools: {
+            listTools: true,
+            callTool: true
+          }
         },
       }
     );
 
-    // Path to WL8 documentation files - relative to the MCP server location
-    this.docsPath = path.join(__dirname, '../../../');
+    // Use environment variable for docs path if provided, fallback to relative path
+    this.docsPath = process.env.WL8_DOCS_PATH || path.join(__dirname, '../../../');
+
+    // Debug logging
+    console.error('[DEBUG] MCP Server Initialization:');
+    console.error(`[DEBUG] Using docs path: ${this.docsPath}`);
+    console.error(`[DEBUG] Current directory: ${process.cwd()}`);
+    console.error(`[DEBUG] __dirname: ${__dirname}`);
 
     this.setupResourceHandlers();
     this.setupToolHandlers();
@@ -65,14 +77,18 @@ class WL8DocsServer {
     // Read specific documentation file
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request: { params: { uri: string } }) => {
       const uri = request.params.uri;
-      const match = uri.match(/^wl8-docs:\/\/(.+)$/);
+      console.error(`[DEBUG] Received resource request for URI: ${uri}`);
+      
+      // Handle URIs with or without the docs/ prefix
+      const match = uri.match(/^wl8-docs:\/\/((?:docs\/)?.*?)$/);
       
       if (!match) {
         throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${uri}`);
       }
       
       const filePath = match[1];
-      const fullPath = path.join(this.docsPath, filePath);
+      const fullPath = path.join(this.docsPath, filePath.replace(/^docs\//, ''));
+      console.error(`[DEBUG] Resolved full path: ${fullPath}`);
       
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
@@ -92,9 +108,10 @@ class WL8DocsServer {
           ]
         };
       } catch (error: any) {
+        console.error(`[DEBUG] Error reading file: ${error.message}`);
         throw new McpError(
           ErrorCode.ResourceNotFound,
-          `Documentation file not found: ${error.message}`
+          `Documentation file not found at path: ${fullPath}. Error: ${error.message}`
         );
       }
     });
@@ -141,10 +158,12 @@ class WL8DocsServer {
 
       try {
         const searchPattern = section 
-          ? `docs/${section}/**/*.md`
-          : 'docs/**/*.md';
+          ? `${section}/**/*.md`
+          : '**/*.md';
           
+        console.error(`[DEBUG] Searching with pattern: ${searchPattern} in ${this.docsPath}`);
         const docFiles = await fg([searchPattern], { cwd: this.docsPath });
+        console.error(`[DEBUG] Found ${docFiles.length} files matching pattern`);
         interface SearchResult {
           file: string;
           title: string;
