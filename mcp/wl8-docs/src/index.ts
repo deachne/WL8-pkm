@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { Server } from '@modelcontextprotocol/sdk/server';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
 import {
   CallToolRequestSchema,
   ErrorCode,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
   McpError,
-} from '@modelcontextprotocol/sdk/types.js';
+} from '@modelcontextprotocol/sdk/types';
 import axios from 'axios';
 import fg from 'fast-glob';
 import matter from 'gray-matter';
@@ -39,7 +40,7 @@ class WL8DocsServer {
     this.setupToolHandlers();
     
     // Error handling
-    this.server.onerror = (error) => console.error('[MCP Error]', error);
+    this.server.onerror = (error: any) => console.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
       await this.server.close();
       process.exit(0);
@@ -47,6 +48,7 @@ class WL8DocsServer {
   }
 
   private setupResourceHandlers() {
+    // List available documentation resources
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const docFiles = await fg(['**/*.md'], { cwd: this.docsPath });
       
@@ -55,9 +57,46 @@ class WL8DocsServer {
           uri: `wl8-docs://${file}`,
           name: path.basename(file, '.md'),
           mimeType: 'text/markdown',
-          description: `WL8 documentation for ${path.basename(file, '.md')}`
+          description: `WL8 documentation for ${path.basename(file, '.md')}` as const
         }))
       };
+    });
+
+    // Read specific documentation file
+    this.server.setRequestHandler(ReadResourceRequestSchema, async (request: { params: { uri: string } }) => {
+      const uri = request.params.uri;
+      const match = uri.match(/^wl8-docs:\/\/(.+)$/);
+      
+      if (!match) {
+        throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${uri}`);
+      }
+      
+      const filePath = match[1];
+      const fullPath = path.join(this.docsPath, filePath);
+      
+      try {
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        const { data, content: docContent } = matter(content);
+        
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: 'text/markdown',
+              text: content,
+              metadata: {
+                title: data.title || path.basename(filePath, '.md'),
+                ...data
+              }
+            }
+          ]
+        };
+      } catch (error: any) {
+        throw new McpError(
+          ErrorCode.ResourceNotFound,
+          `Documentation file not found: ${error.message}`
+        );
+      }
     });
   }
 
@@ -87,7 +126,7 @@ class WL8DocsServer {
       ]
     }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments: any } }) => {
       if (request.params.name !== 'search_docs') {
         throw new McpError(
           ErrorCode.MethodNotFound,
@@ -109,7 +148,12 @@ class WL8DocsServer {
         interface SearchResult {
           file: string;
           title: string;
-          excerpt: string;
+          content: string;
+          metadata: Record<string, any>;
+          matches: {
+            context: string;
+            position: number;
+          }[];
         }
         
         const results: SearchResult[] = [];
@@ -118,14 +162,30 @@ class WL8DocsServer {
           const content = fs.readFileSync(path.join(this.docsPath, file), 'utf-8');
           const { data, content: docContent } = matter(content);
           
-          if (
-            docContent.toLowerCase().includes(query.toLowerCase()) ||
-            data.title?.toLowerCase().includes(query.toLowerCase())
-          ) {
+          const queryLower = query.toLowerCase();
+          const contentLower = docContent.toLowerCase();
+          const titleLower = (data.title || '').toLowerCase();
+          
+          if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
+            // Find all matches and their surrounding context
+            const matches = [];
+            let pos = contentLower.indexOf(queryLower);
+            while (pos !== -1) {
+              const start = Math.max(0, pos - 50);
+              const end = Math.min(docContent.length, pos + query.length + 50);
+              matches.push({
+                context: docContent.substring(start, end),
+                position: pos
+              });
+              pos = contentLower.indexOf(queryLower, pos + 1);
+            }
+            
             results.push({
               file,
               title: data.title || path.basename(file, '.md'),
-              excerpt: docContent.substring(0, 200) + '...'
+              content: docContent,
+              metadata: data,
+              matches
             });
           }
         }

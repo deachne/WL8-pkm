@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ErrorCode, ListResourcesRequestSchema, ListToolsRequestSchema, McpError, } from '@modelcontextprotocol/sdk/types.js';
+import { Server } from '@modelcontextprotocol/sdk/server';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
+import { CallToolRequestSchema, ErrorCode, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema, McpError, } from '@modelcontextprotocol/sdk/types';
 import fg from 'fast-glob';
 import matter from 'gray-matter';
 import fs from 'fs';
@@ -19,11 +19,8 @@ class WL8DocsServer {
                 tools: {},
             },
         });
-        // Path to WL8 documentation files
-        this.docsPath = process.env.WL8_DOCS_PATH || '';
-        if (!this.docsPath) {
-            throw new Error('WL8_DOCS_PATH environment variable is required');
-        }
+        // Path to WL8 documentation files - relative to the MCP server location
+        this.docsPath = path.join(__dirname, '../../../');
         this.setupResourceHandlers();
         this.setupToolHandlers();
         // Error handling
@@ -34,6 +31,7 @@ class WL8DocsServer {
         });
     }
     setupResourceHandlers() {
+        // List available documentation resources
         this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
             const docFiles = await fg(['**/*.md'], { cwd: this.docsPath });
             return {
@@ -44,6 +42,36 @@ class WL8DocsServer {
                     description: `WL8 documentation for ${path.basename(file, '.md')}`
                 }))
             };
+        });
+        // Read specific documentation file
+        this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+            const uri = request.params.uri;
+            const match = uri.match(/^wl8-docs:\/\/(.+)$/);
+            if (!match) {
+                throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${uri}`);
+            }
+            const filePath = match[1];
+            const fullPath = path.join(this.docsPath, filePath);
+            try {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                const { data, content: docContent } = matter(content);
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: content,
+                            metadata: {
+                                title: data.title || path.basename(filePath, '.md'),
+                                ...data
+                            }
+                        }
+                    ]
+                };
+            }
+            catch (error) {
+                throw new McpError(ErrorCode.ResourceNotFound, `Documentation file not found: ${error.message}`);
+            }
         });
     }
     setupToolHandlers() {
@@ -85,12 +113,28 @@ class WL8DocsServer {
                 for (const file of docFiles) {
                     const content = fs.readFileSync(path.join(this.docsPath, file), 'utf-8');
                     const { data, content: docContent } = matter(content);
-                    if (docContent.toLowerCase().includes(query.toLowerCase()) ||
-                        data.title?.toLowerCase().includes(query.toLowerCase())) {
+                    const queryLower = query.toLowerCase();
+                    const contentLower = docContent.toLowerCase();
+                    const titleLower = (data.title || '').toLowerCase();
+                    if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
+                        // Find all matches and their surrounding context
+                        const matches = [];
+                        let pos = contentLower.indexOf(queryLower);
+                        while (pos !== -1) {
+                            const start = Math.max(0, pos - 50);
+                            const end = Math.min(docContent.length, pos + query.length + 50);
+                            matches.push({
+                                context: docContent.substring(start, end),
+                                position: pos
+                            });
+                            pos = contentLower.indexOf(queryLower, pos + 1);
+                        }
                         results.push({
                             file,
                             title: data.title || path.basename(file, '.md'),
-                            excerpt: docContent.substring(0, 200) + '...'
+                            content: docContent,
+                            metadata: data,
+                            matches
                         });
                     }
                 }
