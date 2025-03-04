@@ -9,7 +9,6 @@ import {
   ReadResourceRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types';
-import axios from 'axios';
 import fg from 'fast-glob';
 import matter from 'gray-matter';
 import fs from 'fs';
@@ -117,6 +116,32 @@ class WL8DocsServer {
     });
   }
 
+  // Helper method to read a file from path
+  private async readDocFile(filePath: string) {
+    try {
+      const fullPath = path.join(this.docsPath, filePath);
+      console.error(`[DEBUG] Reading file: ${fullPath}`);
+      
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`File not found: ${fullPath}`);
+      }
+      
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const { data, content: docContent } = matter(content);
+      
+      return {
+        content,
+        metadata: {
+          title: data.title || path.basename(filePath, '.md'),
+          ...data
+        }
+      };
+    } catch (error: any) {
+      console.error(`[DEBUG] Error reading file: ${error.message}`);
+      throw error;
+    }
+  }
+
   private setupToolHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
@@ -133,100 +158,143 @@ class WL8DocsServer {
               section: {
                 type: 'string',
                 description: 'Optional documentation section to search within',
-                enum: ['api-reference', 'wealth-lab-framework'],
+                enum: ['api-reference', 'wealth-lab-framework', 'general'],
                 optional: true
               }
             },
             required: ['query']
+          }
+        },
+        {
+          name: 'readResource',
+          description: 'Read a specific documentation file by path',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description: 'Path to the documentation file (e.g., "api-reference/indicator-base.md")'
+              }
+            },
+            required: ['path']
           }
         }
       ]
     }));
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments: any } }) => {
-      if (request.params.name !== 'search_docs') {
+      const { name, arguments: args } = request.params;
+      
+      if (name === 'search_docs') {
+        const { query, section } = args as {
+          query: string;
+          section?: string;
+        };
+
+        try {
+          const searchPattern = section 
+            ? `${section}/**/*.md`
+            : '**/*.md';
+            
+          console.error(`[DEBUG] Searching with pattern: ${searchPattern} in ${this.docsPath}`);
+          const docFiles = await fg([searchPattern], { cwd: this.docsPath });
+          console.error(`[DEBUG] Found ${docFiles.length} files matching pattern`);
+          
+          interface SearchResult {
+            file: string;
+            title: string;
+            excerpt: string;
+            section?: string;
+          }
+          
+          const results: SearchResult[] = [];
+
+          for (const file of docFiles) {
+            const content = fs.readFileSync(path.join(this.docsPath, file), 'utf-8');
+            const { data, content: docContent } = matter(content);
+            
+            const queryLower = query.toLowerCase();
+            const contentLower = docContent.toLowerCase();
+            const titleLower = (data.title || '').toLowerCase();
+            
+            if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
+              // Create an excerpt
+              let excerpt: string;
+              const pos = contentLower.indexOf(queryLower);
+              if (pos !== -1) {
+                const start = Math.max(0, pos - 50);
+                const end = Math.min(docContent.length, pos + query.length + 150);
+                excerpt = docContent.substring(start, end) + "...";
+              } else {
+                // If query is in title but not content, use the beginning of the content
+                excerpt = docContent.substring(0, 200) + "...";
+              }
+              
+              // Determine the section from the file path
+              let section: string | undefined;
+              const pathParts = file.split('/');
+              if (pathParts.length > 1) {
+                section = pathParts[0];
+              }
+              
+              results.push({
+                file,
+                title: data.title || path.basename(file, '.md'),
+                excerpt,
+                section
+              });
+            }
+          }
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(results, null, 2)
+              }
+            ]
+          };
+        } catch (error: any) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Error searching docs: ${error.message}`
+              }
+            ],
+            isError: true
+          };
+        }
+      } else if (name === 'readResource') {
+        const { path: filePath } = args as { path: string };
+        
+        try {
+          const { content, metadata } = await this.readDocFile(filePath);
+          
+          return {
+            content: [
+              {
+                type: 'text',
+                text: content
+              }
+            ]
+          };
+        } catch (error: any) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Error reading file: ${error.message}`
+              }
+            ],
+            isError: true
+          };
+        }
+      } else {
         throw new McpError(
           ErrorCode.MethodNotFound,
-          `Unknown tool: ${request.params.name}`
+          `Unknown tool: ${name}`
         );
-      }
-
-      const { query, section } = request.params.arguments as {
-        query: string;
-        section?: string;
-      };
-
-      try {
-        const searchPattern = section 
-          ? `${section}/**/*.md`
-          : '**/*.md';
-          
-        console.error(`[DEBUG] Searching with pattern: ${searchPattern} in ${this.docsPath}`);
-        const docFiles = await fg([searchPattern], { cwd: this.docsPath });
-        console.error(`[DEBUG] Found ${docFiles.length} files matching pattern`);
-        interface SearchResult {
-          file: string;
-          title: string;
-          content: string;
-          metadata: Record<string, any>;
-          matches: {
-            context: string;
-            position: number;
-          }[];
-        }
-        
-        const results: SearchResult[] = [];
-
-        for (const file of docFiles) {
-          const content = fs.readFileSync(path.join(this.docsPath, file), 'utf-8');
-          const { data, content: docContent } = matter(content);
-          
-          const queryLower = query.toLowerCase();
-          const contentLower = docContent.toLowerCase();
-          const titleLower = (data.title || '').toLowerCase();
-          
-          if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
-            // Find all matches and their surrounding context
-            const matches = [];
-            let pos = contentLower.indexOf(queryLower);
-            while (pos !== -1) {
-              const start = Math.max(0, pos - 50);
-              const end = Math.min(docContent.length, pos + query.length + 50);
-              matches.push({
-                context: docContent.substring(start, end),
-                position: pos
-              });
-              pos = contentLower.indexOf(queryLower, pos + 1);
-            }
-            
-            results.push({
-              file,
-              title: data.title || path.basename(file, '.md'),
-              content: docContent,
-              metadata: data,
-              matches
-            });
-          }
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(results, null, 2)
-            }
-          ]
-        };
-      } catch (error: any) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error searching docs: ${error.message}`
-            }
-          ],
-          isError: true
-        };
       }
     });
   }
