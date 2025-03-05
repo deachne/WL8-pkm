@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { Server } from '@modelcontextprotocol/sdk/server';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -8,7 +8,7 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
   McpError,
-} from '@modelcontextprotocol/sdk/types';
+} from '@modelcontextprotocol/sdk/types.js';
 import fg from 'fast-glob';
 import matter from 'gray-matter';
 import fs from 'fs';
@@ -39,13 +39,15 @@ class WL8DocsServer {
     );
 
     // Use environment variable for docs path if provided, fallback to relative path
+    const __filename = new URL(import.meta.url).pathname;
+    const __dirname = path.dirname(__filename);
     this.docsPath = process.env.WL8_DOCS_PATH || path.join(__dirname, '../../../');
 
     // Debug logging
     console.error('[DEBUG] MCP Server Initialization:');
     console.error(`[DEBUG] Using docs path: ${this.docsPath}`);
     console.error(`[DEBUG] Current directory: ${process.cwd()}`);
-    console.error(`[DEBUG] __dirname: ${__dirname}`);
+    console.error(`[DEBUG] __dirname equivalent: ${__dirname}`);
 
     this.setupResourceHandlers();
     this.setupToolHandlers();
@@ -117,7 +119,7 @@ class WL8DocsServer {
       } catch (error: any) {
         console.error(`[DEBUG] Error reading file: ${error.message}`);
         throw new McpError(
-          ErrorCode.ResourceNotFound,
+          ErrorCode.InvalidRequest,
           `Documentation file not found at path: ${fullPath}. Error: ${error.message}`
         );
       }
@@ -195,8 +197,8 @@ class WL8DocsServer {
       ]
     }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments: any } }) => {
-      const { name, arguments: args } = request.params;
+    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const { name, arguments: args = {} } = request.params;
       
       if (name === 'search_docs') {
         const { query, section, fullContent } = args as {
