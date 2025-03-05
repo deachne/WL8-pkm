@@ -78,16 +78,24 @@ class WL8DocsServer {
       const uri = request.params.uri;
       console.error(`[DEBUG] Received resource request for URI: ${uri}`);
       
-      // Handle URIs with or without the docs/ prefix
-      const match = uri.match(/^wl8-docs:\/\/((?:docs\/)?.*?)$/);
+      // Simplified URI handling - just extract the path after the protocol
+      const match = uri.match(/^wl8-docs:\/\/(.+)$/);
       
       if (!match) {
-        throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${uri}`);
+        console.error(`[DEBUG] Invalid URI format: ${uri}`);
+        throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${uri}. Expected format: wl8-docs://path/to/file.md`);
       }
       
-      const filePath = match[1];
-      const fullPath = path.join(this.docsPath, filePath.replace(/^docs\//, ''));
+      let filePath = match[1];
+      
+      // Remove any 'docs/' prefix if present
+      if (filePath.startsWith('docs/')) {
+        filePath = filePath.substring(5);
+      }
+      
+      const fullPath = path.join(this.docsPath, filePath);
       console.error(`[DEBUG] Resolved full path: ${fullPath}`);
+      console.error(`[DEBUG] File exists check: ${fs.existsSync(fullPath)}`);
       
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
@@ -160,13 +168,18 @@ class WL8DocsServer {
                 description: 'Optional documentation section to search within',
                 enum: ['api-reference', 'wealth-lab-framework', 'general'],
                 optional: true
+              },
+              fullContent: {
+                type: 'boolean',
+                description: 'Whether to return the full document content instead of just excerpts',
+                optional: true
               }
             },
             required: ['query']
           }
         },
         {
-          name: 'readResource',
+          name: 'read_resource',
           description: 'Read a specific documentation file by path',
           inputSchema: {
             type: 'object',
@@ -186,10 +199,13 @@ class WL8DocsServer {
       const { name, arguments: args } = request.params;
       
       if (name === 'search_docs') {
-        const { query, section } = args as {
+        const { query, section, fullContent } = args as {
           query: string;
           section?: string;
+          fullContent?: boolean;
         };
+
+        console.error(`[DEBUG] search_docs called with query: "${query}", section: "${section || 'all'}", fullContent: ${fullContent || false}`);
 
         try {
           const searchPattern = section 
@@ -204,13 +220,17 @@ class WL8DocsServer {
             file: string;
             title: string;
             excerpt: string;
+            content?: string;
             section?: string;
           }
           
           const results: SearchResult[] = [];
 
           for (const file of docFiles) {
-            const content = fs.readFileSync(path.join(this.docsPath, file), 'utf-8');
+            const fullPath = path.join(this.docsPath, file);
+            console.error(`[DEBUG] Checking file: ${fullPath}`);
+            
+            const content = fs.readFileSync(fullPath, 'utf-8');
             const { data, content: docContent } = matter(content);
             
             const queryLower = query.toLowerCase();
@@ -218,6 +238,8 @@ class WL8DocsServer {
             const titleLower = (data.title || '').toLowerCase();
             
             if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
+              console.error(`[DEBUG] Match found in file: ${file}`);
+              
               // Create an excerpt
               let excerpt: string;
               const pos = contentLower.indexOf(queryLower);
@@ -237,14 +259,23 @@ class WL8DocsServer {
                 section = pathParts[0];
               }
               
-              results.push({
+              const result: SearchResult = {
                 file,
                 title: data.title || path.basename(file, '.md'),
                 excerpt,
                 section
-              });
+              };
+              
+              // Include full content if requested
+              if (fullContent) {
+                result.content = content;
+              }
+              
+              results.push(result);
             }
           }
+          
+          console.error(`[DEBUG] Found ${results.length} matching documents`);
 
           return {
             content: [
@@ -265,11 +296,14 @@ class WL8DocsServer {
             isError: true
           };
         }
-      } else if (name === 'readResource') {
+      } else if (name === 'read_resource') {
         const { path: filePath } = args as { path: string };
+        
+        console.error(`[DEBUG] read_resource called with path: ${filePath}`);
         
         try {
           const { content, metadata } = await this.readDocFile(filePath);
+          console.error(`[DEBUG] Successfully read file: ${filePath}`);
           
           return {
             content: [
@@ -280,11 +314,14 @@ class WL8DocsServer {
             ]
           };
         } catch (error: any) {
+          console.error(`[DEBUG] Error in read_resource: ${error.message}`);
+          console.error(`[DEBUG] Stack trace: ${error.stack}`);
+          
           return {
             content: [
               {
                 type: 'text',
-                text: `Error reading file: ${error.message}`
+                text: `Error reading file: ${error.message}\nPlease ensure the path is correct and the file exists.`
               }
             ],
             isError: true

@@ -1,16 +1,21 @@
 #!/usr/bin/env node
-import { Server } from '@modelcontextprotocol/sdk/server';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
-import { CallToolRequestSchema, ErrorCode, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema, McpError, } from '@modelcontextprotocol/sdk/types';
-import fg from 'fast-glob';
-import matter from 'gray-matter';
-import fs from 'fs';
-import path from 'path';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const server_1 = require("@modelcontextprotocol/sdk/server");
+const stdio_1 = require("@modelcontextprotocol/sdk/server/stdio");
+const types_1 = require("@modelcontextprotocol/sdk/types");
+const fast_glob_1 = __importDefault(require("fast-glob"));
+const gray_matter_1 = __importDefault(require("gray-matter"));
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 class WL8DocsServer {
     server;
     docsPath;
     constructor() {
-        this.server = new Server({
+        this.server = new server_1.Server({
             name: 'wl8-docs-server',
             version: '0.1.0',
         }, {
@@ -26,7 +31,7 @@ class WL8DocsServer {
             },
         });
         // Use environment variable for docs path if provided, fallback to relative path
-        this.docsPath = process.env.WL8_DOCS_PATH || path.join(__dirname, '../../../');
+        this.docsPath = process.env.WL8_DOCS_PATH || path_1.default.join(__dirname, '../../../');
         // Debug logging
         console.error('[DEBUG] MCP Server Initialization:');
         console.error(`[DEBUG] Using docs path: ${this.docsPath}`);
@@ -43,32 +48,38 @@ class WL8DocsServer {
     }
     setupResourceHandlers() {
         // List available documentation resources
-        this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
-            const docFiles = await fg(['**/*.md'], { cwd: this.docsPath });
+        this.server.setRequestHandler(types_1.ListResourcesRequestSchema, async () => {
+            const docFiles = await (0, fast_glob_1.default)(['**/*.md'], { cwd: this.docsPath });
             return {
                 resources: docFiles.map(file => ({
                     uri: `wl8-docs://${file}`,
-                    name: path.basename(file, '.md'),
+                    name: path_1.default.basename(file, '.md'),
                     mimeType: 'text/markdown',
-                    description: `WL8 documentation for ${path.basename(file, '.md')}`
+                    description: `WL8 documentation for ${path_1.default.basename(file, '.md')}`
                 }))
             };
         });
         // Read specific documentation file
-        this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+        this.server.setRequestHandler(types_1.ReadResourceRequestSchema, async (request) => {
             const uri = request.params.uri;
             console.error(`[DEBUG] Received resource request for URI: ${uri}`);
-            // Handle URIs with or without the docs/ prefix
-            const match = uri.match(/^wl8-docs:\/\/((?:docs\/)?.*?)$/);
+            // Simplified URI handling - just extract the path after the protocol
+            const match = uri.match(/^wl8-docs:\/\/(.+)$/);
             if (!match) {
-                throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${uri}`);
+                console.error(`[DEBUG] Invalid URI format: ${uri}`);
+                throw new types_1.McpError(types_1.ErrorCode.InvalidRequest, `Invalid URI format: ${uri}. Expected format: wl8-docs://path/to/file.md`);
             }
-            const filePath = match[1];
-            const fullPath = path.join(this.docsPath, filePath.replace(/^docs\//, ''));
+            let filePath = match[1];
+            // Remove any 'docs/' prefix if present
+            if (filePath.startsWith('docs/')) {
+                filePath = filePath.substring(5);
+            }
+            const fullPath = path_1.default.join(this.docsPath, filePath);
             console.error(`[DEBUG] Resolved full path: ${fullPath}`);
+            console.error(`[DEBUG] File exists check: ${fs_1.default.existsSync(fullPath)}`);
             try {
-                const content = fs.readFileSync(fullPath, 'utf-8');
-                const { data, content: docContent } = matter(content);
+                const content = fs_1.default.readFileSync(fullPath, 'utf-8');
+                const { data, content: docContent } = (0, gray_matter_1.default)(content);
                 return {
                     contents: [
                         {
@@ -76,7 +87,7 @@ class WL8DocsServer {
                             mimeType: 'text/markdown',
                             text: content,
                             metadata: {
-                                title: data.title || path.basename(filePath, '.md'),
+                                title: data.title || path_1.default.basename(filePath, '.md'),
                                 ...data
                             }
                         }
@@ -85,12 +96,35 @@ class WL8DocsServer {
             }
             catch (error) {
                 console.error(`[DEBUG] Error reading file: ${error.message}`);
-                throw new McpError(ErrorCode.ResourceNotFound, `Documentation file not found at path: ${fullPath}. Error: ${error.message}`);
+                throw new types_1.McpError(types_1.ErrorCode.ResourceNotFound, `Documentation file not found at path: ${fullPath}. Error: ${error.message}`);
             }
         });
     }
+    // Helper method to read a file from path
+    async readDocFile(filePath) {
+        try {
+            const fullPath = path_1.default.join(this.docsPath, filePath);
+            console.error(`[DEBUG] Reading file: ${fullPath}`);
+            if (!fs_1.default.existsSync(fullPath)) {
+                throw new Error(`File not found: ${fullPath}`);
+            }
+            const content = fs_1.default.readFileSync(fullPath, 'utf-8');
+            const { data, content: docContent } = (0, gray_matter_1.default)(content);
+            return {
+                content,
+                metadata: {
+                    title: data.title || path_1.default.basename(filePath, '.md'),
+                    ...data
+                }
+            };
+        }
+        catch (error) {
+            console.error(`[DEBUG] Error reading file: ${error.message}`);
+            throw error;
+        }
+    }
     setupToolHandlers() {
-        this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+        this.server.setRequestHandler(types_1.ListToolsRequestSchema, async () => ({
             tools: [
                 {
                     name: 'search_docs',
@@ -105,80 +139,146 @@ class WL8DocsServer {
                             section: {
                                 type: 'string',
                                 description: 'Optional documentation section to search within',
-                                enum: ['api-reference', 'wealth-lab-framework'],
+                                enum: ['api-reference', 'wealth-lab-framework', 'general'],
+                                optional: true
+                            },
+                            fullContent: {
+                                type: 'boolean',
+                                description: 'Whether to return the full document content instead of just excerpts',
                                 optional: true
                             }
                         },
                         required: ['query']
                     }
+                },
+                {
+                    name: 'read_resource',
+                    description: 'Read a specific documentation file by path',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            path: {
+                                type: 'string',
+                                description: 'Path to the documentation file (e.g., "api-reference/indicator-base.md")'
+                            }
+                        },
+                        required: ['path']
+                    }
                 }
             ]
         }));
-        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-            if (request.params.name !== 'search_docs') {
-                throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
-            }
-            const { query, section } = request.params.arguments;
-            try {
-                const searchPattern = section
-                    ? `${section}/**/*.md`
-                    : '**/*.md';
-                console.error(`[DEBUG] Searching with pattern: ${searchPattern} in ${this.docsPath}`);
-                const docFiles = await fg([searchPattern], { cwd: this.docsPath });
-                console.error(`[DEBUG] Found ${docFiles.length} files matching pattern`);
-                const results = [];
-                for (const file of docFiles) {
-                    const content = fs.readFileSync(path.join(this.docsPath, file), 'utf-8');
-                    const { data, content: docContent } = matter(content);
-                    const queryLower = query.toLowerCase();
-                    const contentLower = docContent.toLowerCase();
-                    const titleLower = (data.title || '').toLowerCase();
-                    if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
-                        // Find all matches and their surrounding context
-                        const matches = [];
-                        let pos = contentLower.indexOf(queryLower);
-                        while (pos !== -1) {
-                            const start = Math.max(0, pos - 50);
-                            const end = Math.min(docContent.length, pos + query.length + 50);
-                            matches.push({
-                                context: docContent.substring(start, end),
-                                position: pos
-                            });
-                            pos = contentLower.indexOf(queryLower, pos + 1);
+        this.server.setRequestHandler(types_1.CallToolRequestSchema, async (request) => {
+            const { name, arguments: args } = request.params;
+            if (name === 'search_docs') {
+                const { query, section, fullContent } = args;
+                console.error(`[DEBUG] search_docs called with query: "${query}", section: "${section || 'all'}", fullContent: ${fullContent || false}`);
+                try {
+                    const searchPattern = section
+                        ? `${section}/**/*.md`
+                        : '**/*.md';
+                    console.error(`[DEBUG] Searching with pattern: ${searchPattern} in ${this.docsPath}`);
+                    const docFiles = await (0, fast_glob_1.default)([searchPattern], { cwd: this.docsPath });
+                    console.error(`[DEBUG] Found ${docFiles.length} files matching pattern`);
+                    const results = [];
+                    for (const file of docFiles) {
+                        const fullPath = path_1.default.join(this.docsPath, file);
+                        console.error(`[DEBUG] Checking file: ${fullPath}`);
+                        const content = fs_1.default.readFileSync(fullPath, 'utf-8');
+                        const { data, content: docContent } = (0, gray_matter_1.default)(content);
+                        const queryLower = query.toLowerCase();
+                        const contentLower = docContent.toLowerCase();
+                        const titleLower = (data.title || '').toLowerCase();
+                        if (contentLower.includes(queryLower) || titleLower.includes(queryLower)) {
+                            console.error(`[DEBUG] Match found in file: ${file}`);
+                            // Create an excerpt
+                            let excerpt;
+                            const pos = contentLower.indexOf(queryLower);
+                            if (pos !== -1) {
+                                const start = Math.max(0, pos - 50);
+                                const end = Math.min(docContent.length, pos + query.length + 150);
+                                excerpt = docContent.substring(start, end) + "...";
+                            }
+                            else {
+                                // If query is in title but not content, use the beginning of the content
+                                excerpt = docContent.substring(0, 200) + "...";
+                            }
+                            // Determine the section from the file path
+                            let section;
+                            const pathParts = file.split('/');
+                            if (pathParts.length > 1) {
+                                section = pathParts[0];
+                            }
+                            const result = {
+                                file,
+                                title: data.title || path_1.default.basename(file, '.md'),
+                                excerpt,
+                                section
+                            };
+                            // Include full content if requested
+                            if (fullContent) {
+                                result.content = content;
+                            }
+                            results.push(result);
                         }
-                        results.push({
-                            file,
-                            title: data.title || path.basename(file, '.md'),
-                            content: docContent,
-                            metadata: data,
-                            matches
-                        });
                     }
+                    console.error(`[DEBUG] Found ${results.length} matching documents`);
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify(results, null, 2)
+                            }
+                        ]
+                    };
                 }
-                return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: JSON.stringify(results, null, 2)
-                        }
-                    ]
-                };
+                catch (error) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: `Error searching docs: ${error.message}`
+                            }
+                        ],
+                        isError: true
+                    };
+                }
             }
-            catch (error) {
-                return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `Error searching docs: ${error.message}`
-                        }
-                    ],
-                    isError: true
-                };
+            else if (name === 'read_resource') {
+                const { path: filePath } = args;
+                console.error(`[DEBUG] read_resource called with path: ${filePath}`);
+                try {
+                    const { content, metadata } = await this.readDocFile(filePath);
+                    console.error(`[DEBUG] Successfully read file: ${filePath}`);
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: content
+                            }
+                        ]
+                    };
+                }
+                catch (error) {
+                    console.error(`[DEBUG] Error in read_resource: ${error.message}`);
+                    console.error(`[DEBUG] Stack trace: ${error.stack}`);
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: `Error reading file: ${error.message}\nPlease ensure the path is correct and the file exists.`
+                            }
+                        ],
+                        isError: true
+                    };
+                }
+            }
+            else {
+                throw new types_1.McpError(types_1.ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
             }
         });
     }
     async run() {
-        const transport = new StdioServerTransport();
+        const transport = new stdio_1.StdioServerTransport();
         await this.server.connect(transport);
         console.error('WL8 Docs MCP server running on stdio');
     }
